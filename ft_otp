@@ -1,0 +1,148 @@
+#!/Users/jledesma/goinfre/miniconda3/envs/42AI-jledesma/bin/python3
+import argparse
+import hashlib
+import hmac
+import os
+import re
+import struct
+import time
+import base64
+import pyotp
+import qrcode_terminal
+
+class InvalidFileError(Exception):
+    pass
+
+def leer_argumentos():
+    analizador = inicializar_analizador()
+    return analizador.g, analizador.k, analizador.qr
+
+def inicializar_analizador():
+    analizador = argparse.ArgumentParser(
+        description="Herramienta casera para generar contraseñas TOTP.",
+        epilog="Ejercicio 'ft_otp' del Bootcamp de Ciberseguridad de la Fundación 42 (Málaga).",
+    )
+    analizador.add_argument("-g", metavar="fichero", help="almacena una clave hexadecimal de 64 caracteres mínimo en un fichero 'ft_otp.key'.", type=str)
+    analizador.add_argument("-k", metavar="fichero", help="genera una contraseña temporal usando un fichero y la muestra por pantalla.", type=str)
+    analizador.add_argument("-qr", metavar="fichero", help="muestra un QR con la clave secreta.", type=str)
+
+    return analizador.parse_args()
+
+def leer_encriptar_clave(fichero):
+    """
+    Toma como argumento un nombre de fichero que contiene una clave secreta y encripta la clave antes de devolverla
+    """
+    try:
+        with open(fichero, "r") as f:
+            clave = f.read()
+            salt = os.urandom(16)
+            clave_bytes = clave.encode('utf-8')
+            clave_hash = hashlib.sha256(salt + clave_bytes).digest()
+            clave_encriptada = base64.b64encode(salt + clave_hash).decode('utf-8')
+            return clave_encriptada
+    except FileNotFoundError:
+        # Si el archivo no existe, crearlo y escribir un string vacío
+        with open(fichero, "w") as f:
+            f.write('')
+        return ''
+
+def guardar_clave(fichero, clave):
+    try:
+        with open(fichero, "a+") as f:
+            f.seek(0)  # Mover el cursor al principio del archivo
+            f.truncate()  # Vaciar el contenido del archivo antes de escribir
+            f.write(clave)
+    except FileNotFoundError as e:
+        print(f'Error saving key in file {e}')
+        exit(1)
+
+def validar_clave(clave):
+    hex_pattern = re.compile(r'^[0-9a-fA-F]{64,}$')
+    return bool(hex_pattern.match(clave))
+
+def desencriptar_clave(clave_encriptada):
+    clave_bytes = base64.b64decode(clave_encriptada.encode('utf-8'))
+    salt = clave_bytes[:16]
+    clave_hash = clave_bytes[16:]
+    clave_original = hashlib.sha256(salt + clave_hash).hexdigest()
+    return clave_original
+
+def generar_OTP(clave):
+    """
+    Genera un código TOTP de 6 dígitos utilizando una clave secreta hexadecimal.
+
+    Args:
+        clave (str): La clave secreta hexadecimal.
+    Returns:
+        str: El código TOTP de 6 dígitos generado.
+    """
+    # Convertir la clave hexadecimal a bytes
+    clave_b = bytes.fromhex(clave)
+    # Obtener el tiempo actual en segundos y dividirlo por 30
+    tiempo = int(time.time() // 30)
+    # Empaquetar el tiempo en bytes en formato big-endian
+    tiempo_b = struct.pack(">Q", tiempo)
+    # Calcular el hash HMAC-SHA1 utilizando la clave y el tiempo
+    hash_b = hmac.digest(clave_b, tiempo_b, hashlib.sha1)
+    # Imprimir la clave secreta y el código TOTP generado por pyotp para comparar
+    print(f"Clave (Correcta): {pyotp.TOTP(base64.b32encode(clave_b)).now()} = pyotp", )
+    # Obtener el último byte del hash y aplicar una máscara de 15 para obtener el desplazamiento
+    offset = hash_b[19] & 15
+    # Extraer 4 bytes del hash usando el desplazamiento y desempaquetarlos como un entero sin signo
+    otp_key = struct.unpack('>I', hash_b[offset:offset + 4])[0]
+    # Aplicar una máscara de 0x7FFFFFFF y calcular el módulo de 1000000 para obtener el código TOTP de 6 dígitos
+    otp_key = (otp_key & 0x7FFFFFFF) % 1000000
+
+    # Formatear el código como una cadena de 6 dígitos y devolverlo
+    return "{:06d}".format(otp_key)
+
+def main():
+    fichero_clave_compartida, fichero_cifrado, qr = leer_argumentos()
+
+    if fichero_clave_compartida:
+        try:
+            clave_compartida = fichero_clave_compartida
+            with open(clave_compartida) as f:
+                temporal = f.read()
+            clave_encriptada = leer_encriptar_clave("ft_otp.key")
+            print("Clave almacenada en 'ft_otp.key'.")
+
+            # Guardar clave encriptada directamente en el archivo
+            with open("ft_otp.key", "w") as f:
+                f.write(clave_encriptada)
+
+            print("Fichero 'ft_otp.key' cifrado con contraseña.")
+        except :
+            print("Error al leer el fichero de clave compartida.")
+            exit(1)
+
+    elif fichero_cifrado or qr:
+        fichero = fichero_cifrado if fichero_cifrado else qr
+
+        if not os.path.exists(fichero):
+            print("Error: El fichero no existe o no es legible.")
+            exit(1)
+
+        else:
+            with open(fichero, "r") as f:
+                clave_encriptada = f.read().strip()
+            if len(clave_encriptada) < 64:
+                print("Error: La clave no es válida o es demasiado corta.")
+                exit(1)
+            # Desencriptar la clave antes de validarla
+            clave = desencriptar_clave(clave_encriptada)
+
+            # Asegurarse de que la clave es válida antes de usarla
+            if not validar_clave(clave):
+                print("Error: La clave no es válida.")
+                exit(1)
+
+            if fichero_cifrado:
+                print("Código Generado :", generar_OTP(clave))
+
+            else:
+                print("QR con la clave secreta:")
+                qrcode_terminal.draw(clave)
+
+if __name__ == "__main__":
+    main()
