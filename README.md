@@ -1,5 +1,5 @@
 <h1 align="center">
-  ft_otp - 42 Proyect Cibersec
+  ft_otp - 42 Bootcamp Cybersec
 </h1>
 
 <p align="center">
